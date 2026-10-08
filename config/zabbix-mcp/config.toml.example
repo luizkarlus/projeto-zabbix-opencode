@@ -1,0 +1,41 @@
+# ==============================================================================
+# Zabbix MCP Server (initMAX) — configuração do laboratório
+# O bootstrap.sh gera config.toml a partir deste template, substituindo:
+#   __ZABBIX_API_TOKEN__  → token criado automaticamente via API do Zabbix
+#   __MCP_TOKEN_HASH__    → hash SHA-256 do token bearer dos clientes MCP
+#   __ADMIN_HASH__        → hash scrypt da senha do portal admin
+# ==============================================================================
+
+[server]
+transport = "http"
+host = "0.0.0.0"
+port = 8081
+log_file = "/var/log/zabbix-mcp/server.log"
+
+# ---------------------------------------------------------------- Zabbix lab
+[zabbix.lab]
+url = "http://zabbix-web:8080"
+api_token = "__ZABBIX_API_TOKEN__"
+# Lab: escrita liberada para a IA criar hosts, manutenções, acks etc.
+# Em produção, use read_only = true.
+read_only = false
+verify_ssl = false
+
+# ------------------------------------------------- Token dos clientes MCP
+# Clientes (Open WebUI, Claude Code, scripts) devem enviar:
+#   Authorization: Bearer zmcp_...
+[tokens.openwebui]
+name = "Open WebUI"
+token_hash = "sha256:__MCP_TOKEN_HASH__"
+scopes = ["*"]
+read_only = false
+
+# ---------------------------------------------------------------- Admin UI
+[admin]
+enabled = true
+port = 9090
+update_check_enabled = false
+
+[admin.users.admin]
+password_hash = "__ADMIN_HASH__"
+role = "admin"

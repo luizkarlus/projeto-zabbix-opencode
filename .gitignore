@@ -1,0 +1,7 @@
+.env
+config/zabbix-mcp/config.toml
+config/credenciais.txt
+laya/models/*.gguf
+laya/bin/laya
+repos/
+*.log

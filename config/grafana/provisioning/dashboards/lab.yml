@@ -1,0 +1,14 @@
+# Dashboards provisionados a partir de arquivos JSON em /var/lib/grafana/dashboards
+# (monte seus .json lá ou importe pela UI — o plugin do Zabbix também traz exemplos)
+apiVersion: 1
+
+providers:
+  - name: lab
+    orgId: 1
+    folder: "Zabbix Lab"
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

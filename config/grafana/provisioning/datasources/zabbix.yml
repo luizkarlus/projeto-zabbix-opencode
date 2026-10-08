@@ -1,0 +1,25 @@
+# ==============================================================================
+# Datasource Zabbix — provisionado automaticamente na subida do Grafana.
+# Plugin: alexanderzobnin-zabbix-app (instalado via GF_INSTALL_PLUGINS)
+#
+# Credenciais: as padrão do container Zabbix (Admin/zabbix).
+# Se trocar a senha do Admin no Zabbix, ajuste aqui e reinicie o Grafana.
+# ==============================================================================
+apiVersion: 1
+
+datasources:
+  - name: Zabbix
+    type: alexanderzobnin-zabbix-datasource
+    access: proxy
+    url: http://zabbix-web:8080/api_jsonrpc.php
+    isDefault: true
+    editable: true
+    jsonData:
+      username: Admin
+      # Trends: histórico de longo prazo mais leve para dashboards amplos
+      trends: true
+      trendsFrom: "7d"
+      trendsRange: "30d"
+      cacheTTL: 1h
+    secureJsonData:
+      password: zabbix

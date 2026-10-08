@@ -1,0 +1,245 @@
+name: zabbix-ai-lab
+
+# ==============================================================================
+# Laboratório: Zabbix 7.0 LTS + MCP (initMAX) + Ollama + Open WebUI
+#              + JEV/Laya (System-1) + WA-AKG (WhatsApp)
+#
+# Uso: ./scripts/bootstrap.sh   (provisiona tudo na primeira vez)
+#      docker compose up -d     (subidas seguintes)
+# ==============================================================================
+
+networks:
+  lab-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  ollama-data:
+  open-webui-data:
+  grafana-data:
+  wa-mysql-data:
+  wa-akg-data:
+  wa-akg-uploads:
+  zmcp-logs:
+
+services:
+  # ------------------------------------------------------------------ Zabbix
+  postgres:
+    image: postgres:16-alpine
+    container_name: zlab-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${ZBX_DB_PASSWORD:?defina no .env}
+      POSTGRES_DB: zabbix
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [lab-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zabbix -d zabbix"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:alpine-7.0-latest
+    container_name: zlab-server
+    restart: unless-stopped
+    environment:
+      DB_SERVER_HOST: postgres
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${ZBX_DB_PASSWORD}
+      POSTGRES_DB: zabbix
+    ports:
+      - "10051:10051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [lab-net]
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.0-latest
+    container_name: zlab-web
+    restart: unless-stopped
+    environment:
+      ZBX_SERVER_HOST: zabbix-server
+      DB_SERVER_HOST: postgres
+      POSTGRES_USER: zabbix
+      POSTGRES_PASSWORD: ${ZBX_DB_PASSWORD}
+      POSTGRES_DB: zabbix
+      PHP_TZ: ${TZ:-America/Sao_Paulo}
+    ports:
+      - "8080:8080"          # http://localhost:8080  (Admin / zabbix)
+    depends_on:
+      zabbix-server:
+        condition: service_started
+    networks: [lab-net]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ > /dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  zabbix-agent:
+    image: zabbix/zabbix-agent:alpine-7.0-latest
+    container_name: zlab-agent
+    restart: unless-stopped
+    environment:
+      ZBX_HOSTNAME: zabbix-agent-docker
+      ZBX_SERVER_HOST: zabbix-server
+      ZBX_PASSIVE_ALLOW: "true"
+    networks: [lab-net]
+    depends_on:
+      zabbix-server:
+        condition: service_started
+
+  # ------------------------------------------------- MCP Server (initMAX)
+  zabbix-mcp:
+    build: ./repos/zabbix-mcp-server
+    container_name: zlab-mcp
+    restart: unless-stopped
+    command: ["--config", "/etc/zabbix-mcp/config.toml", "--host", "0.0.0.0", "--port", "8081"]
+    environment:
+      ADMIN_PORT: 9090
+    ports:
+      - "8081:8081"          # MCP endpoint: http://localhost:8081/mcp
+      - "9091:9090"          # Admin portal: http://localhost:9091
+    volumes:
+      - ./config/zabbix-mcp/config.toml:/etc/zabbix-mcp/config.toml
+      - zmcp-logs:/var/log/zabbix-mcp
+    networks: [lab-net]
+    depends_on:
+      zabbix-web:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/opt/zabbix-mcp/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ---------------------------------------------------------------- Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: zlab-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?defina no .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: alexanderzobnin-zabbix-app
+      TZ: ${TZ:-America/Sao_Paulo}
+    ports:
+      - "3002:3000"          # http://localhost:3002
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks: [lab-net]
+    depends_on:
+      zabbix-web:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # ------------------------------------------------------------------ WA-AKG
+  wa-akg-db:
+    image: mysql:8.0
+    container_name: zlab-wa-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${WA_MYSQL_ROOT_PASSWORD:?defina no .env}
+      MYSQL_DATABASE: wa_akg
+    volumes:
+      - wa-mysql-data:/var/lib/mysql
+    networks: [lab-net]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  wa-akg:
+    build: ./repos/WA-AKG
+    container_name: zlab-wa
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql://root:${WA_MYSQL_ROOT_PASSWORD}@wa-akg-db:3306/wa_akg
+      AUTH_SECRET: ${WA_AUTH_SECRET:?defina no .env}
+      BASE_URL: http://localhost:3000
+      NEXTAUTH_URL: http://localhost:3000
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_PUBLIC_API_URL: http://localhost:3000/api
+      BAILEYS_LOG_LEVEL: error
+      NEXT_PUBLIC_SWAGGER_ENABLED: "true"
+      NEXT_PUBLIC_SWAGGER_USERNAME: admin
+      NEXT_PUBLIC_SWAGGER_PASSWORD: ${WA_ADMIN_PASSWORD:?defina no .env}
+      TZ: ${TZ:-America/Sao_Paulo}
+      LOCALE: pt-BR
+      ADMIN_EMAIL: ${WA_ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${WA_ADMIN_PASSWORD}
+    ports:
+      - "3000:3000"          # http://localhost:3000 (dashboard + /docs)
+    depends_on:
+      wa-akg-db:
+        condition: service_healthy
+    volumes:
+      - wa-akg-data:/app/data
+      - wa-akg-uploads:/app/uploads
+    networks: [lab-net]
+
+  # ------------------------------------------------------------------ IA
+  ollama:
+    image: ollama/ollama:latest
+    container_name: zlab-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks: [lab-net]
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list > /dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: zlab-webui
+    restart: unless-stopped
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      WEBUI_NAME: "Zabbix AI Lab"
+      TZ: ${TZ:-America/Sao_Paulo}
+    ports:
+      - "3001:8080"          # http://localhost:3001
+    volumes:
+      - open-webui-data:/app/backend/data
+    networks: [lab-net]
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  # ------------------------------------------------- JEV / Laya (System-1)
+  laya-mcp:
+    build: ./laya
+    container_name: zlab-laya
+    restart: unless-stopped
+    ports:
+      - "8001:8001"          # OpenAPI (mcpo): http://localhost:8001/docs
+    networks: [lab-net]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/openapi.json')\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
